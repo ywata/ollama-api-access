@@ -1,1 +1,7 @@
 /target
+*.txt
+*.jpg
+*.jpeg
+*.png
+test_data/*
+
