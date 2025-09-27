@@ -88,6 +88,41 @@ fn get_image_files_from_directory(dir: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn
     Ok(image_files)
 }
 
+/// Process a single image with the given prompt and model
+async fn process_single_image(
+    ollama: &Ollama,
+    image_path: &PathBuf,
+    prompt_text: &str,
+    model: &str,
+    index: usize,
+    total: usize,
+) -> Result<(), Box<dyn std::error::Error>> {
+    println!("\n📁 Processing image {}/{}: {}", index + 1, total, image_path.display());
+    
+    // Read and encode image file
+    let image_data = fs::read(&image_path)?;
+    let image_base64 = base64::prelude::BASE64_STANDARD.encode(&image_data);
+    
+    // Create chat message with image
+    let image = Image::from_base64(&image_base64);
+    let messages = vec![
+        ChatMessage::user(prompt_text.to_string()).with_images(vec![image])
+    ];
+    
+    let request = ChatMessageRequest::new(model.to_string(), messages);
+    let response = ollama.send_chat_messages(request).await?;
+    
+    println!("📝 Analysis:");
+    println!("{}", response.message.content);
+    
+    // Add separator between images if processing multiple
+    if total > 1 && index < total - 1 {
+        println!("\n{}", "=".repeat(50));
+    }
+    
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -142,28 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             // Process each image
             for (index, image_path) in image_paths.iter().enumerate() {
-                println!("\n📁 Processing image {}/{}: {}", index + 1, image_paths.len(), image_path.display());
-                
-                // Read and encode image file
-                let image_data = fs::read(&image_path)?;
-                let image_base64 = base64::prelude::BASE64_STANDARD.encode(&image_data);
-                
-                // Create chat message with image
-                let image = Image::from_base64(&image_base64);
-                let messages = vec![
-                    ChatMessage::user(prompt_text.clone()).with_images(vec![image])
-                ];
-                
-                let request = ChatMessageRequest::new(model.clone(), messages);
-                let response = ollama.send_chat_messages(request).await?;
-                
-                println!("📝 Analysis:");
-                println!("{}", response.message.content);
-                
-                // Add separator between images if processing multiple
-                if image_paths.len() > 1 && index < image_paths.len() - 1 {
-                    println!("\n{}", "=".repeat(50));
-                }
+                process_single_image(&ollama, image_path, &prompt_text, &model, index, image_paths.len()).await?;
             }
         }
     }
