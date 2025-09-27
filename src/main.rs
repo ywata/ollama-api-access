@@ -42,13 +42,50 @@ enum Commands {
         prompt_file: Option<PathBuf>,
         
         /// Path to the image file
-        #[arg(short, long)]
-        image: PathBuf,
+        #[arg(short, long, group = "image_input")]
+        image: Option<PathBuf>,
+        
+        /// Path to directory containing images to process
+        #[arg(long, group = "image_input")]
+        image_dir: Option<PathBuf>,
         
         /// The vision model to use (default: llama3.2-vision)
         #[arg(short, long, default_value = "llama3.2-vision")]
         model: String,
     },
+}
+
+/// Get all image files from a directory
+fn get_image_files_from_directory(dir: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+    let mut image_files = Vec::new();
+    
+    if !dir.is_dir() {
+        return Err(format!("Path is not a directory: {}", dir.display()).into());
+    }
+    
+    let entries = fs::read_dir(dir)?;
+    
+    for entry in entries {
+        let entry = entry?;
+        let path = entry.path();
+        
+        if path.is_file() {
+            if let Some(extension) = path.extension() {
+                let ext = extension.to_string_lossy().to_lowercase();
+                match ext.as_str() {
+                    "jpg" | "jpeg" | "png" | "gif" | "bmp" | "webp" | "tiff" | "tif" => {
+                        image_files.push(path);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    
+    // Sort the files for consistent ordering
+    image_files.sort();
+    
+    Ok(image_files)
 }
 
 #[tokio::main]
@@ -75,7 +112,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("\n📝 Response:");
             println!("{}", response.response);
         }
-        Commands::AnalyzeImage { prompt, prompt_file, image, model } => {
+        Commands::AnalyzeImage { prompt, prompt_file, image, image_dir, model } => {
             let ollama = Ollama::default();
             
             // Get prompt from either --prompt or --prompt-file
@@ -86,24 +123,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (None, None) => return Err("Must specify either --prompt or --prompt-file".into()),
             };
             
-            println!("🖼️  Analyzing image with {} model...", model);
-            println!("📁 Image: {}", image.display());
+            // Get image paths from either --image or --image-dir
+            let image_paths = match (image, image_dir) {
+                (Some(img), None) => vec![img],
+                (None, Some(dir)) => {
+                    println!("🔍 Scanning directory: {}", dir.display());
+                    get_image_files_from_directory(&dir)?
+                },
+                (Some(_), Some(_)) => return Err("Cannot specify both --image and --image-dir".into()),
+                (None, None) => return Err("Must specify either --image or --image-dir".into()),
+            };
             
-            // Read and encode image file
-            let image_data = fs::read(&image)?;
-            let image_base64 = base64::prelude::BASE64_STANDARD.encode(&image_data);
+            if image_paths.is_empty() {
+                return Err("No image files found".into());
+            }
             
-            // Create chat message with image
-            let image = Image::from_base64(&image_base64);
-            let messages = vec![
-                ChatMessage::user(prompt_text).with_images(vec![image])
-            ];
+            println!("🖼️  Analyzing {} image(s) with {} model...", image_paths.len(), model);
             
-            let request = ChatMessageRequest::new(model, messages);
-            let response = ollama.send_chat_messages(request).await?;
-            
-            println!("\n📝 Analysis:");
-            println!("{}", response.message.content);
+            // Process each image
+            for (index, image_path) in image_paths.iter().enumerate() {
+                println!("\n📁 Processing image {}/{}: {}", index + 1, image_paths.len(), image_path.display());
+                
+                // Read and encode image file
+                let image_data = fs::read(&image_path)?;
+                let image_base64 = base64::prelude::BASE64_STANDARD.encode(&image_data);
+                
+                // Create chat message with image
+                let image = Image::from_base64(&image_base64);
+                let messages = vec![
+                    ChatMessage::user(prompt_text.clone()).with_images(vec![image])
+                ];
+                
+                let request = ChatMessageRequest::new(model.clone(), messages);
+                let response = ollama.send_chat_messages(request).await?;
+                
+                println!("📝 Analysis:");
+                println!("{}", response.message.content);
+                
+                // Add separator between images if processing multiple
+                if image_paths.len() > 1 && index < image_paths.len() - 1 {
+                    println!("\n{}", "=".repeat(50));
+                }
+            }
         }
     }
 
