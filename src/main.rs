@@ -90,23 +90,17 @@ fn get_image_files_from_directory(dir: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn
 
 /// Process a single image with the given prompt and model
 async fn process_single_image(
-    image_path: &PathBuf,
+    ollama: &Ollama,
+    image_data: &[u8],
     prompt_text: &str,
     model: &str,
-    index: usize,
-    total: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    println!("\n📁 Processing image {}/{}: {}", index + 1, total, image_path.display());
-    
-    // Create a fresh Ollama client for each image to ensure clean context
-    let ollama = Ollama::default();
     
     // Read and encode image file
-    let image_data = fs::read(&image_path)?;
     let image_base64 = base64::prelude::BASE64_STANDARD.encode(&image_data);
+    let image = Image::from_base64(&image_base64);
     
     // Create chat message with image
-    let image = Image::from_base64(&image_base64);
     let messages = vec![
         ChatMessage::user(prompt_text.to_string()).with_images(vec![image])
     ];
@@ -116,11 +110,6 @@ async fn process_single_image(
     
     println!("📝 Analysis:");
     println!("{}", response.message.content);
-    
-    // Add separator between images if processing multiple
-    if total > 1 && index < total - 1 {
-        println!("\n{}", "=".repeat(50));
-    }
     
     Ok(())
 }
@@ -177,7 +166,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             // Process each image
             for (index, image_path) in image_paths.iter().enumerate() {
-                process_single_image(image_path, &prompt_text, &model, index, image_paths.len()).await?;
+                let ollama = Ollama::default();
+                let total = image_paths.len();                
+                println!("\n📁 Processing image {}/{}: {}", index + 1, total, image_path.display());
+                let image_data = fs::read(&image_path)?;
+                process_single_image(&ollama, &image_data, &prompt_text, &model).await?;
+                
+                // Add separator between images if processing multiple
+                if total > 1 && index < total - 1 {
+                    println!("\n{}", "=".repeat(50));
+                }
+
+
             }
         }
     }
