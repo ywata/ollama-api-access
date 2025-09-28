@@ -8,3 +8,5 @@ ollama-rs = "0.3.2"
 tokio = { version = "1.0", features = ["full"] }
 clap = { version = "4.0", features = ["derive"] }
 base64 = "0.22"
+log = "0.4"
+env_logger = "0.10"

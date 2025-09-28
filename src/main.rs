@@ -6,6 +6,7 @@ use ollama_rs::generation::images::Image;
 use base64::Engine;
 use std::fs;
 use std::path::PathBuf;
+use log::{info, warn, error, debug};
 
 #[derive(Parser)]
 #[command(name = "ollama-api-access")]
@@ -108,7 +109,7 @@ async fn process_single_image(
     let request = ChatMessageRequest::new(model.to_string(), messages);
     let response = ollama.send_chat_messages(request).await?;
     
-    println!("📝 Analysis:");
+    info!("📝 Analysis:");
     println!("{}", response.message.content);
     
     Ok(())
@@ -134,6 +135,9 @@ async fn process_image_with_error_handling(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize logger
+    env_logger::init();
+    
     let cli = Cli::parse();
 
     match cli.command {
@@ -148,12 +152,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (None, None) => return Err("Must specify either --prompt or --prompt-file".into()),
             };
             
-            println!("🤖 Sending prompt to {} model...", model);
+            info!("🤖 Sending prompt to {} model...", model);
             
             let request = GenerationRequest::new(model, prompt_text);
             let response = ollama.generate(request).await?;
             
-            println!("\n📝 Response:");
+            info!("📝 Response:");
             println!("{}", response.response);
         }
         Commands::AnalyzeImage { prompt, prompt_file, image, image_dir, model } => {
@@ -169,7 +173,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let image_paths = match (image, image_dir) {
                 (Some(img), None) => vec![img],
                 (None, Some(dir)) => {
-                    println!("🔍 Scanning directory: {}", dir.display());
+                    info!("🔍 Scanning directory: {}", dir.display());
                     get_image_files_from_directory(&dir)?
                 },
                 (Some(_), Some(_)) => return Err("Cannot specify both --image and --image-dir".into()),
@@ -180,7 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("No image files found".into());
             }
             
-            println!("🖼️  Analyzing {} image(s) with {} model...", image_paths.len(), model);
+            info!("🖼️  Analyzing {} image(s) with {} model...", image_paths.len(), model);
             
             let mut successful_count = 0;
             let mut failed_count = 0;
@@ -188,7 +192,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Process each image
             for (index, image_path) in image_paths.iter().enumerate() {
                 let total = image_paths.len();                
-                println!("\n📁 Processing image {}/{}: {}", index + 1, total, image_path.display());
+                info!("📁 Processing image {}/{}: {}", index + 1, total, image_path.display());
                 
                 // Handle each image individually to avoid stopping on errors
                 match process_image_with_error_handling(image_path, &prompt_text, &model).await {
@@ -197,23 +201,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     Err(e) => {
                         failed_count += 1;
-                        println!("❌ Error processing {}: {}", image_path.display(), e);
+                        error!("❌ Error processing {}: {}", image_path.display(), e);
                     }
                 }
                 
                 // Add separator between images if processing multiple
                 if total > 1 && index < total - 1 {
-                    println!("\n{}", "=".repeat(50));
+                    debug!("{}", "=".repeat(50));
                 }
             }
             
             // Print summary
-            println!("\n📊 Processing Summary:");
-            println!("✅ Successfully processed: {}", successful_count);
+            info!("📊 Processing Summary:");
+            info!("✅ Successfully processed: {}", successful_count);
             if failed_count > 0 {
-                println!("❌ Failed to process: {}", failed_count);
+                warn!("❌ Failed to process: {}", failed_count);
             }
-            println!("📈 Total images: {}", image_paths.len());
+            info!("📈 Total images: {}", image_paths.len());
         }
     }
 
