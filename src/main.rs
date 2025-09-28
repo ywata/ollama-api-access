@@ -18,8 +18,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Chat with Ollama using a prompt
-    Chat {
+    /// Query Ollama with a prompt
+    Query {
         /// The prompt to send to Ollama
         #[arg(short, long, group = "prompt_input")]
         prompt: Option<String>,
@@ -127,7 +127,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Chat { prompt, prompt_file, model } => {
+        Commands::Query { prompt, prompt_file, model } => {
             let ollama = Ollama::default();
             
             // Get prompt from either --prompt or --prompt-file
