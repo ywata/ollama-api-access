@@ -90,7 +90,6 @@ fn get_image_files_from_directory(dir: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn
 
 /// Process a single image with the given prompt and model
 async fn process_single_image(
-    ollama: &Ollama,
     image_path: &PathBuf,
     prompt_text: &str,
     model: &str,
@@ -98,6 +97,9 @@ async fn process_single_image(
     total: usize,
 ) -> Result<(), Box<dyn std::error::Error>> {
     println!("\n📁 Processing image {}/{}: {}", index + 1, total, image_path.display());
+    
+    // Create a fresh Ollama client for each image to ensure clean context
+    let ollama = Ollama::default();
     
     // Read and encode image file
     let image_data = fs::read(&image_path)?;
@@ -148,8 +150,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("{}", response.response);
         }
         Commands::AnalyzeImage { prompt, prompt_file, image, image_dir, model } => {
-            let ollama = Ollama::default();
-            
             // Get prompt from either --prompt or --prompt-file
             let prompt_text = match (prompt, prompt_file) {
                 (Some(p), None) => p,
@@ -177,7 +177,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             // Process each image
             for (index, image_path) in image_paths.iter().enumerate() {
-                process_single_image(&ollama, image_path, &prompt_text, &model, index, image_paths.len()).await?;
+                process_single_image(image_path, &prompt_text, &model, index, image_paths.len()).await?;
             }
         }
     }
