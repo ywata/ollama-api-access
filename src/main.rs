@@ -114,6 +114,24 @@ async fn process_single_image(
     Ok(())
 }
 
+/// Process a single image with error handling (reads file and processes)
+async fn process_image_with_error_handling(
+    image_path: &PathBuf,
+    prompt_text: &str,
+    model: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Create a fresh Ollama client for each image to ensure clean context
+    let ollama = Ollama::default();
+    
+    // Read image file
+    let image_data = fs::read(&image_path)?;
+    
+    // Process the image
+    process_single_image(&ollama, &image_data, prompt_text, model).await?;
+    
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -164,21 +182,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             
             println!("🖼️  Analyzing {} image(s) with {} model...", image_paths.len(), model);
             
+            let mut successful_count = 0;
+            let mut failed_count = 0;
+            
             // Process each image
             for (index, image_path) in image_paths.iter().enumerate() {
-                let ollama = Ollama::default();
                 let total = image_paths.len();                
                 println!("\n📁 Processing image {}/{}: {}", index + 1, total, image_path.display());
-                let image_data = fs::read(&image_path)?;
-                process_single_image(&ollama, &image_data, &prompt_text, &model).await?;
+                
+                // Handle each image individually to avoid stopping on errors
+                match process_image_with_error_handling(image_path, &prompt_text, &model).await {
+                    Ok(()) => {
+                        successful_count += 1;
+                    }
+                    Err(e) => {
+                        failed_count += 1;
+                        println!("❌ Error processing {}: {}", image_path.display(), e);
+                    }
+                }
                 
                 // Add separator between images if processing multiple
                 if total > 1 && index < total - 1 {
                     println!("\n{}", "=".repeat(50));
                 }
-
-
             }
+            
+            // Print summary
+            println!("\n📊 Processing Summary:");
+            println!("✅ Successfully processed: {}", successful_count);
+            if failed_count > 0 {
+                println!("❌ Failed to process: {}", failed_count);
+            }
+            println!("📈 Total images: {}", image_paths.len());
         }
     }
 
