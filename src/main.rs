@@ -7,6 +7,22 @@ use base64::Engine;
 use std::fs;
 use std::path::PathBuf;
 use log::{info, warn, error, debug};
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use ratatui::{
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    Frame, Terminal,
+};
+use std::io;
+use tokio::sync::mpsc;
+use std::time::{Duration, Instant};
 
 #[derive(Parser)]
 #[command(name = "ollama-api-access")]
@@ -56,6 +72,12 @@ enum Commands {
         
         /// The vision model to use (default: llama3.2-vision)
         #[arg(short, long, default_value = "llama3.2-vision")]
+        model: String,
+    },
+    /// Start an interactive chat session with Ollama
+    Chat {
+        /// The model to use for chat (default: llama3.2)
+        #[arg(short, long, default_value = "llama3.2")]
         model: String,
     },
 }
@@ -151,6 +173,257 @@ async fn process_single_image(
     println!("{}", response.message.content);
     
     Ok(())
+}
+
+/// Represents a chat message in the conversation
+#[derive(Debug, Clone)]
+struct ChatMessageDisplay {
+    content: String,
+    is_user: bool,
+    timestamp: Instant,
+}
+
+/// Application state for the chat interface
+struct ChatApp {
+    messages: Vec<ChatMessageDisplay>,
+    input: String,
+    should_quit: bool,
+    model: String,
+    ollama: Ollama,
+    scroll_offset: usize,
+}
+
+impl ChatApp {
+    fn new(model: String) -> Self {
+        Self {
+            messages: Vec::new(),
+            input: String::new(),
+            should_quit: false,
+            model,
+            ollama: Ollama::default(),
+            scroll_offset: 0,
+        }
+    }
+
+    fn add_message(&mut self, content: String, is_user: bool) {
+        self.messages.push(ChatMessageDisplay {
+            content,
+            is_user,
+            timestamp: Instant::now(),
+        });
+        // Auto-scroll to bottom
+        if self.messages.len() > 10 {
+            self.scroll_offset = self.messages.len() - 10;
+        }
+    }
+
+    fn scroll_up(&mut self) {
+        if self.scroll_offset > 0 {
+            self.scroll_offset -= 1;
+        }
+    }
+
+    fn scroll_down(&mut self) {
+        let max_scroll = if self.messages.len() > 10 {
+            self.messages.len() - 10
+        } else {
+            0
+        };
+        if self.scroll_offset < max_scroll {
+            self.scroll_offset += 1;
+        }
+    }
+}
+
+/// Events that can occur in the chat application
+#[derive(Debug)]
+enum ChatEvent {
+    Input(Event),
+    OllamaResponse(String),
+    OllamaError(String),
+}
+
+/// Run the chat interface
+async fn run_chat(model: String) -> Result<(), Box<dyn std::error::Error>> {
+    // Setup terminal
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+
+    // Create app state
+    let mut app = ChatApp::new(model);
+    
+    // Add welcome message
+    app.add_message(
+        format!("Welcome to Ollama Chat! Using model: {}\nType your message and press Enter to send. Press Ctrl+C to quit.", app.model),
+        false,
+    );
+
+    // Create channels for async communication
+    let (tx, mut rx) = mpsc::unbounded_channel::<ChatEvent>();
+
+    // Spawn input event handler
+    let input_tx = tx.clone();
+    tokio::spawn(async move {
+        loop {
+            if let Ok(event) = event::read() {
+                if input_tx.send(ChatEvent::Input(event)).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    // Main event loop
+    loop {
+        // Draw UI
+        terminal.draw(|f| ui(f, &app))?;
+
+        // Handle events
+        if let Ok(chat_event) = rx.try_recv() {
+            match chat_event {
+                ChatEvent::Input(event) => {
+                    if let Event::Key(key) = event {
+                        if key.kind == KeyEventKind::Press {
+                            match key.code {
+                                KeyCode::Char('c') if key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) => {
+                                    app.should_quit = true;
+                                }
+                                KeyCode::Enter => {
+                                    if !app.input.trim().is_empty() {
+                                        let user_message = app.input.clone();
+                                        app.add_message(user_message.clone(), true);
+                                        app.input.clear();
+
+                                        // Send to Ollama in background
+                                        let ollama = app.ollama.clone();
+                                        let model = app.model.clone();
+                                        let tx_clone = tx.clone();
+                                        
+                                        tokio::spawn(async move {
+                                            match send_to_ollama(&ollama, &model, &user_message).await {
+                                                Ok(response) => {
+                                                    let _ = tx_clone.send(ChatEvent::OllamaResponse(response));
+                                                }
+                                                Err(e) => {
+                                                    let _ = tx_clone.send(ChatEvent::OllamaError(format!("Error: {}", e)));
+                                                }
+                                            }
+                                        });
+                                    }
+                                }
+                                KeyCode::Backspace => {
+                                    app.input.pop();
+                                }
+                                KeyCode::Up => {
+                                    app.scroll_up();
+                                }
+                                KeyCode::Down => {
+                                    app.scroll_down();
+                                }
+                                KeyCode::Char(c) => {
+                                    app.input.push(c);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+                ChatEvent::OllamaResponse(response) => {
+                    app.add_message(response, false);
+                }
+                ChatEvent::OllamaError(error) => {
+                    app.add_message(error, false);
+                }
+            }
+        }
+
+        if app.should_quit {
+            break;
+        }
+
+        // Small delay to prevent busy waiting
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Restore terminal
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+
+    Ok(())
+}
+
+/// Send message to Ollama and get response
+async fn send_to_ollama(
+    ollama: &Ollama,
+    model: &str,
+    message: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let messages = vec![ChatMessage::user(message.to_string())];
+    let request = ChatMessageRequest::new(model.to_string(), messages);
+    let response = ollama.send_chat_messages(request).await?;
+    Ok(response.message.content)
+}
+
+/// Draw the UI
+fn ui(f: &mut Frame, app: &ChatApp) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(3)])
+        .split(f.size());
+
+    // Messages area
+    let messages: Vec<ListItem> = app
+        .messages
+        .iter()
+        .skip(app.scroll_offset)
+        .take(chunks[0].height as usize - 2) // Account for borders
+        .map(|msg| {
+            let style = if msg.is_user {
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Green)
+            };
+            
+            let prefix = if msg.is_user { "You: " } else { "AI: " };
+            let content = format!("{}{}", prefix, msg.content);
+            
+            ListItem::new(Text::from(Line::from(vec![
+                Span::styled(content, style)
+            ])))
+        })
+        .collect();
+
+    let messages_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Chat Messages (↑/↓ to scroll, Ctrl+C to quit)");
+    
+    let messages_list = List::new(messages).block(messages_block);
+    f.render_widget(messages_list, chunks[0]);
+
+    // Input area
+    let input_block = Block::default()
+        .borders(Borders::ALL)
+        .title("Type your message (Enter to send)");
+    
+    let input_paragraph = Paragraph::new(app.input.as_str())
+        .block(input_block)
+        .wrap(Wrap { trim: true });
+    
+    f.render_widget(input_paragraph, chunks[1]);
+
+    // Set cursor position
+    f.set_cursor(
+        chunks[1].x + app.input.len() as u16 + 1,
+        chunks[1].y + 1,
+    );
 }
 
 #[tokio::main]
@@ -274,6 +547,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 warn!("❌ Failed to process: {}", failed_count);
             }
             info!("📈 Total images: {}", image_sources.len());
+        }
+        Commands::Chat { model } => {
+            info!("🚀 Starting chat with {} model...", model);
+            run_chat(model).await?;
         }
     }
 
