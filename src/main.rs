@@ -50,10 +50,46 @@ enum Commands {
         #[arg(long, group = "image_input")]
         image_dir: Option<PathBuf>,
         
+        /// URL to download image from
+        #[arg(long, group = "image_input")]
+        image_url: Option<String>,
+        
         /// The vision model to use (default: llama3.2-vision)
         #[arg(short, long, default_value = "llama3.2-vision")]
         model: String,
     },
+}
+
+/// Represents different sources of images
+#[derive(Debug, Clone)]
+enum ImageSource {
+    File(PathBuf),
+    Url(String),
+}
+
+/// Download image data from URL
+async fn download_image_data(url: &str) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    info!("📥 Downloading image from: {}", url);
+    let response = reqwest::get(url).await?;
+    
+    if !response.status().is_success() {
+        return Err(format!("Failed to download image: HTTP {}", response.status()).into());
+    }
+    
+    let bytes = response.bytes().await?;
+    Ok(bytes.to_vec())
+}
+
+/// Get image data from any source
+async fn get_image_data(source: &ImageSource) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    match source {
+        ImageSource::File(path) => {
+            fs::read(path).map_err(|e| e.into())
+        }
+        ImageSource::Url(url) => {
+            download_image_data(url).await
+        }
+    }
 }
 
 /// Get all image files from a directory
@@ -144,7 +180,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("📝 Response:");
             println!("{}", response.response);
         }
-        Commands::AnalyzeImage { prompt, prompt_file, image, image_dir, model } => {
+        Commands::AnalyzeImage { prompt, prompt_file, image, image_dir, image_url, model } => {
             // Get prompt from either --prompt or --prompt-file
             let prompt_text = match (prompt, prompt_file) {
                 (Some(p), None) => p,
@@ -153,33 +189,47 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (None, None) => return Err("Must specify either --prompt or --prompt-file".into()),
             };
             
-            // Get image paths from either --image or --image-dir
-            let image_paths = match (image, image_dir) {
-                (Some(img), None) => vec![img],
-                (None, Some(dir)) => {
+            // Create ImageSource instances based on command arguments
+            let image_sources = match (image, image_dir, image_url) {
+                (Some(img), None, None) => vec![ImageSource::File(img)],
+                (None, Some(dir), None) => {
                     info!("🔍 Scanning directory: {}", dir.display());
-                    get_image_files_from_directory(&dir)?
+                    let image_paths = get_image_files_from_directory(&dir)?;
+                    image_paths.into_iter().map(ImageSource::File).collect()
                 },
-                (Some(_), Some(_)) => return Err("Cannot specify both --image and --image-dir".into()),
-                (None, None) => return Err("Must specify either --image or --image-dir".into()),
+                (None, None, Some(url)) => vec![ImageSource::Url(url)],
+                (Some(_), Some(_), None) => return Err("Cannot specify both --image and --image-dir".into()),
+                (Some(_), None, Some(_)) => return Err("Cannot specify both --image and --image-url".into()),
+                (None, Some(_), Some(_)) => return Err("Cannot specify both --image-dir and --image-url".into()),
+                (Some(_), Some(_), Some(_)) => return Err("Cannot specify multiple image input options".into()),
+                (None, None, None) => return Err("Must specify one of --image, --image-dir, or --image-url".into()),
             };
             
-            if image_paths.is_empty() {
-                return Err("No image files found".into());
+            if image_sources.is_empty() {
+                return Err("No image sources found".into());
             }
             
-            info!("🖼️  Analyzing {} image(s) with {} model...", image_paths.len(), model);
+            info!("🖼️  Analyzing {} image(s) with {} model...", image_sources.len(), model);
             
             let mut successful_count = 0;
             let mut failed_count = 0;
             
-            // Process each image
-            for (index, image_path) in image_paths.iter().enumerate() {
-                let total = image_paths.len();                
-                info!("📁 Processing image {}/{}: {}", index + 1, total, image_path.display());
+            // Process each image source
+            for (index, image_source) in image_sources.iter().enumerate() {
+                let total = image_sources.len();
+                
+                // Display appropriate message based on source type
+                match image_source {
+                    ImageSource::File(path) => {
+                        info!("📁 Processing image {}/{}: {}", index + 1, total, path.display());
+                    }
+                    ImageSource::Url(url) => {
+                        info!("🌐 Processing image {}/{}: {}", index + 1, total, url);
+                    }
+                }
                 
                 // Handle each image individually to avoid stopping on errors
-                match fs::read(&image_path) {
+                match get_image_data(image_source).await {
                     Ok(image_data) => {
                         match process_single_image(&image_data, &prompt_text, &model).await {
                             Ok(()) => {
@@ -187,13 +237,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             Err(e) => {
                                 failed_count += 1;
-                                error!("❌ Error processing {}: {}", image_path.display(), e);
+                                match image_source {
+                                    ImageSource::File(path) => {
+                                        error!("❌ Error processing {}: {}", path.display(), e);
+                                    }
+                                    ImageSource::Url(url) => {
+                                        error!("❌ Error processing {}: {}", url, e);
+                                    }
+                                }
                             }
                         }
                     }
                     Err(e) => {
                         failed_count += 1;
-                        error!("❌ Error reading file {}: {}", image_path.display(), e);
+                        match image_source {
+                            ImageSource::File(path) => {
+                                error!("❌ Error reading file {}: {}", path.display(), e);
+                            }
+                            ImageSource::Url(url) => {
+                                error!("❌ Error downloading {}: {}", url, e);
+                            }
+                        }
                     }
                 }
                 
@@ -209,7 +273,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             if failed_count > 0 {
                 warn!("❌ Failed to process: {}", failed_count);
             }
-            info!("📈 Total images: {}", image_paths.len());
+            info!("📈 Total images: {}", image_sources.len());
         }
     }
 
