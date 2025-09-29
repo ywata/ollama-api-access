@@ -91,16 +91,14 @@ fn get_image_files_from_directory(dir: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn
 
 /// Process a single image with the given prompt and model
 async fn process_single_image(
-    image_path: &PathBuf,
+    image_data: &Vec<u8>,
     prompt_text: &str,
     model: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Create a fresh Ollama client for each image to ensure clean context
     let ollama = Ollama::default();
     
-    // Read image file
-    let image_data = fs::read(&image_path)?;
-    
+
     // Encode image file
     let image_base64 = base64::prelude::BASE64_STANDARD.encode(&image_data);
     let image = Image::from_base64(&image_base64);
@@ -181,13 +179,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("📁 Processing image {}/{}: {}", index + 1, total, image_path.display());
                 
                 // Handle each image individually to avoid stopping on errors
-                match process_single_image(image_path, &prompt_text, &model).await {
-                    Ok(()) => {
-                        successful_count += 1;
+                match fs::read(&image_path) {
+                    Ok(image_data) => {
+                        match process_single_image(&image_data, &prompt_text, &model).await {
+                            Ok(()) => {
+                                successful_count += 1;
+                            }
+                            Err(e) => {
+                                failed_count += 1;
+                                error!("❌ Error processing {}: {}", image_path.display(), e);
+                            }
+                        }
                     }
                     Err(e) => {
                         failed_count += 1;
-                        error!("❌ Error processing {}: {}", image_path.display(), e);
+                        error!("❌ Error reading file {}: {}", image_path.display(), e);
                     }
                 }
                 
