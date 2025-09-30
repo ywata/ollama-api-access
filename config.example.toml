@@ -1,0 +1,22 @@
+# Example configuration for ollama-api-access
+# Copy this to ~/.config/ollama-api-access/config.toml and customize
+
+[providers.azure]
+endpoint = "https://your-resource.openai.azure.com/"
+api_key = "your-azure-openai-api-key"
+api_version = "2024-02-15-preview"
+
+[providers.openai]
+api_key = "your-openai-api-key"
+
+# Map provider:model to Azure deployment names
+[deployments]
+"azure:gpt-4" = "your-gpt4-deployment-name"
+"azure:gpt-4o" = "your-gpt4o-deployment-name" 
+"azure:gpt-35-turbo" = "your-gpt35-turbo-deployment-name"
+
+# Examples of usage:
+# cargo run -- chat --model ollama:llama3.2          # Local Ollama
+# cargo run -- chat --model openai:gpt-4             # OpenAI Cloud
+# cargo run -- chat --model azure:gpt-4              # Azure OpenAI (uses deployment mapping)
+# cargo run -- chat --model llama3.2                 # Defaults to ollama:llama3.2

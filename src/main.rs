@@ -1,8 +1,4 @@
 use clap::{Parser, Subcommand};
-use ollama_rs::Ollama;
-use ollama_rs::generation::completion::request::GenerationRequest;
-use ollama_rs::generation::chat::{ChatMessage, request::ChatMessageRequest};
-use ollama_rs::generation::images::Image;
 use base64::Engine;
 use std::fs;
 use std::path::PathBuf;
@@ -23,6 +19,8 @@ use ratatui::{
 use std::io;
 use tokio::sync::mpsc;
 use std::time::{Duration, Instant};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Parser)]
 #[command(name = "ollama-api-access")]
@@ -80,6 +78,174 @@ enum Commands {
         #[arg(short, long, default_value = "llama3.2")]
         model: String,
     },
+}
+
+/// Configuration for AI providers
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct Config {
+    #[serde(default)]
+    providers: Providers,
+    #[serde(default)]
+    deployments: HashMap<String, String>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+struct Providers {
+    #[serde(default)]
+    azure: Option<AzureConfig>,
+    #[serde(default)]
+    openai: Option<OpenAIConfig>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct AzureConfig {
+    endpoint: String,
+    api_key: String,
+    #[serde(default = "default_azure_api_version")]
+    api_version: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+struct OpenAIConfig {
+    api_key: String,
+}
+
+fn default_azure_api_version() -> String {
+    "2024-02-15-preview".to_string()
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            providers: Providers::default(),
+            deployments: HashMap::new(),
+        }
+    }
+}
+
+/// Parsed model specification
+#[derive(Debug, Clone)]
+struct ModelSpec {
+    provider: String,
+    model: String,
+}
+
+impl ModelSpec {
+    /// Parse model string in format "provider:model" or just "model" (defaults to ollama)
+    fn parse(model_str: &str) -> Self {
+        if let Some((provider, model)) = model_str.split_once(':') {
+            Self {
+                provider: provider.to_string(),
+                model: model.to_string(),
+            }
+        } else {
+            Self {
+                provider: "ollama".to_string(),
+                model: model_str.to_string(),
+            }
+        }
+    }
+
+    /// Get the actual deployment name for Azure models
+    fn resolve_deployment(&self, config: &Config) -> String {
+        let key = format!("{}:{}", self.provider, self.model);
+        config.deployments.get(&key)
+            .cloned()
+            .unwrap_or_else(|| self.model.clone())
+    }
+}
+
+/// Load configuration from file
+fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
+    let config_dir = dirs::config_dir()
+        .ok_or("Could not determine config directory")?
+        .join("ollama-api-access");
+    
+    let config_file = config_dir.join("config.toml");
+    
+    if config_file.exists() {
+        let content = std::fs::read_to_string(&config_file)?;
+        let config: Config = toml::from_str(&content)?;
+        Ok(config)
+    } else {
+        // Create default config file
+        std::fs::create_dir_all(&config_dir)?;
+        let default_config = Config::default();
+        let content = toml::to_string_pretty(&default_config)?;
+        std::fs::write(&config_file, content)?;
+        
+        info!("Created default config at: {}", config_file.display());
+        info!("Please edit the config file to add your API keys and endpoints.");
+        
+        Ok(default_config)
+    }
+}
+
+/// Create and configure genai client based on provider
+fn create_genai_client(config: &Config) -> Result<genai::Client, Box<dyn std::error::Error>> {
+    // For now, use environment variables for configuration
+    // Set OPENAI_API_KEY, AZURE_OPENAI_API_KEY etc. from config if available
+    
+    unsafe {
+        if let Some(openai_config) = &config.providers.openai {
+            std::env::set_var("OPENAI_API_KEY", &openai_config.api_key);
+        }
+        
+        if let Some(azure_config) = &config.providers.azure {
+            std::env::set_var("AZURE_OPENAI_API_KEY", &azure_config.api_key);
+            std::env::set_var("AZURE_OPENAI_ENDPOINT", &azure_config.endpoint);
+            std::env::set_var("AZURE_OPENAI_API_VERSION", &azure_config.api_version);
+        }
+    }
+    
+    Ok(genai::Client::default())
+}
+
+/// Send a text query using genai
+async fn send_genai_query(
+    client: &genai::Client,
+    model_spec: &ModelSpec,
+    config: &Config,
+    prompt: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    use genai::chat::{ChatMessage, ChatRequest};
+    
+    let model = model_spec.resolve_deployment(config);
+    
+    info!("🤖 Sending query to {}...", model);
+    
+    let chat_req = ChatRequest::new(vec![ChatMessage::user(prompt)]);
+    
+    let chat_res = client.exec_chat(&model, chat_req, None).await?;
+    
+    Ok(chat_res.content_text_as_str().unwrap_or("").to_string())
+}
+
+/// Send a vision query using genai
+async fn send_genai_vision_query(
+    client: &genai::Client,
+    model_spec: &ModelSpec,
+    config: &Config,
+    prompt: &str,
+    image_data: &[u8],
+) -> Result<String, Box<dyn std::error::Error>> {
+    use genai::chat::{ChatMessage, ChatRequest, ContentPart};
+    
+    let model = model_spec.resolve_deployment(config);
+    
+    info!("🖼️  Sending vision query to {}...", model);
+    
+    // Encode image to base64
+    let image_base64 = base64::prelude::BASE64_STANDARD.encode(image_data);
+    
+    let chat_req = ChatRequest::new(vec![ChatMessage::user(vec![
+        ContentPart::from_text(prompt),
+        ContentPart::from_image_base64("image/jpeg", image_base64),
+    ])]);
+    
+    let chat_res = client.exec_chat(&model, chat_req, None).await?;
+    
+    Ok(chat_res.content_text_as_str().unwrap_or("").to_string())
 }
 
 /// Represents different sources of images
@@ -147,34 +313,6 @@ fn get_image_files_from_directory(dir: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn
     Ok(image_files)
 }
 
-/// Process a single image with the given prompt and model
-async fn process_single_image(
-    image_data: &Vec<u8>,
-    prompt_text: &str,
-    model: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    // Create a fresh Ollama client for each image to ensure clean context
-    let ollama = Ollama::default();
-    
-
-    // Encode image file
-    let image_base64 = base64::prelude::BASE64_STANDARD.encode(&image_data);
-    let image = Image::from_base64(&image_base64);
-    
-    // Create chat message with image
-    let messages = vec![
-        ChatMessage::user(prompt_text.to_string()).with_images(vec![image])
-    ];
-    
-    let request = ChatMessageRequest::new(model.to_string(), messages);
-    let response = ollama.send_chat_messages(request).await?;
-    
-    info!("📝 Analysis:");
-    println!("{}", response.message.content);
-    
-    Ok(())
-}
-
 /// Represents a chat message in the conversation
 #[derive(Debug, Clone)]
 struct ChatMessageDisplay {
@@ -189,18 +327,22 @@ struct ChatApp {
     input: String,
     should_quit: bool,
     model: String,
-    ollama: Ollama,
+    model_spec: ModelSpec,
+    client: genai::Client,
+    config: Config,
     scroll_offset: usize,
 }
 
 impl ChatApp {
-    fn new(model: String) -> Self {
+    fn new(model: String, model_spec: ModelSpec, client: genai::Client, config: Config) -> Self {
         Self {
             messages: Vec::new(),
             input: String::new(),
             should_quit: false,
             model,
-            ollama: Ollama::default(),
+            model_spec,
+            client,
+            config,
             scroll_offset: 0,
         }
     }
@@ -244,7 +386,7 @@ enum ChatEvent {
 }
 
 /// Run the chat interface
-async fn run_chat(model: String) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_chat(model: String, client: genai::Client, config: Config) -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -253,11 +395,13 @@ async fn run_chat(model: String) -> Result<(), Box<dyn std::error::Error>> {
     let mut terminal = Terminal::new(backend)?;
 
     // Create app state
-    let mut app = ChatApp::new(model);
+    let model_spec = ModelSpec::parse(&model);
+    let display_model = model_spec.resolve_deployment(&config);
+    let mut app = ChatApp::new(model, model_spec, client, config);
     
     // Add welcome message
     app.add_message(
-        format!("Welcome to Ollama Chat! Using model: {}\nType your message and press Enter to send. Press Ctrl+C to quit.", app.model),
+        format!("Welcome to Multi-Provider AI Chat! Using model: {}\nType your message and press Enter to send. Press Ctrl+C to quit.", display_model),
         false,
     );
 
@@ -297,13 +441,14 @@ async fn run_chat(model: String) -> Result<(), Box<dyn std::error::Error>> {
                                         app.add_message(user_message.clone(), true);
                                         app.input.clear();
 
-                                        // Send to Ollama in background
-                                        let ollama = app.ollama.clone();
-                                        let model = app.model.clone();
+                                        // Send to AI in background
+                                        let client = app.client.clone();
+                                        let model_spec = app.model_spec.clone();
+                                        let config = app.config.clone();
                                         let tx_clone = tx.clone();
                                         
                                         tokio::spawn(async move {
-                                            match send_to_ollama(&ollama, &model, &user_message).await {
+                                            match send_chat_message(&client, &model_spec, &config, &user_message).await {
                                                 Ok(response) => {
                                                     let _ = tx_clone.send(ChatEvent::OllamaResponse(response));
                                                 }
@@ -360,16 +505,14 @@ async fn run_chat(model: String) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Send message to Ollama and get response
-async fn send_to_ollama(
-    ollama: &Ollama,
-    model: &str,
+/// Send message to AI and get response
+async fn send_chat_message(
+    client: &genai::Client,
+    model_spec: &ModelSpec,
+    config: &Config,
     message: &str,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    let messages = vec![ChatMessage::user(message.to_string())];
-    let request = ChatMessageRequest::new(model.to_string(), messages);
-    let response = ollama.send_chat_messages(request).await?;
-    Ok(response.message.content)
+    send_genai_query(client, model_spec, config, message).await
 }
 
 /// Draw the UI
@@ -433,10 +576,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     let cli = Cli::parse();
 
+    // Load configuration
+    let config = load_config()?;
+    let client = create_genai_client(&config)?;
+
     match cli.command {
         Commands::Query { prompt, prompt_file, model } => {
-            let ollama = Ollama::default();
-            
             // Get prompt from either --prompt or --prompt-file
             let prompt_text = match (prompt, prompt_file) {
                 (Some(p), None) => p,
@@ -445,13 +590,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (None, None) => return Err("Must specify either --prompt or --prompt-file".into()),
             };
             
-            info!("🤖 Sending prompt to {} model...", model);
-            
-            let request = GenerationRequest::new(model, prompt_text);
-            let response = ollama.generate(request).await?;
+            let model_spec = ModelSpec::parse(&model);
+            let response = send_genai_query(&client, &model_spec, &config, &prompt_text).await?;
             
             info!("📝 Response:");
-            println!("{}", response.response);
+            println!("{}", response);
         }
         Commands::AnalyzeImage { prompt, prompt_file, image, image_dir, image_url, model } => {
             // Get prompt from either --prompt or --prompt-file
@@ -482,7 +625,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 return Err("No image sources found".into());
             }
             
-            info!("🖼️  Analyzing {} image(s) with {} model...", image_sources.len(), model);
+            let model_spec = ModelSpec::parse(&model);
+            info!("🖼️  Analyzing {} image(s) with {}...", image_sources.len(), model_spec.resolve_deployment(&config));
             
             let mut successful_count = 0;
             let mut failed_count = 0;
@@ -504,9 +648,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Handle each image individually to avoid stopping on errors
                 match get_image_data(image_source).await {
                     Ok(image_data) => {
-                        match process_single_image(&image_data, &prompt_text, &model).await {
-                            Ok(()) => {
+                        match send_genai_vision_query(&client, &model_spec, &config, &prompt_text, &image_data).await {
+                            Ok(response) => {
                                 successful_count += 1;
+                                info!("📝 Analysis:");
+                                println!("{}", response);
                             }
                             Err(e) => {
                                 failed_count += 1;
@@ -549,8 +695,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             info!("📈 Total images: {}", image_sources.len());
         }
         Commands::Chat { model } => {
-            info!("🚀 Starting chat with {} model...", model);
-            run_chat(model).await?;
+            let model_spec = ModelSpec::parse(&model);
+            info!("🚀 Starting chat with {}...", model_spec.resolve_deployment(&config));
+            run_chat(model, client, config).await?;
         }
     }
 

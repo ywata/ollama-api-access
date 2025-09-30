@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-ollama-rs = "0.3.2"
 tokio = { version = "1.0", features = ["full"] }
 clap = { version = "4.0", features = ["derive"] }
 base64 = "0.22"
@@ -13,3 +12,7 @@ env_logger = "0.10"
 reqwest = { version = "0.12", features = ["json"] }
 ratatui = "0.24"
 crossterm = "0.27"
+genai = "0.1"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+dirs = "5.0"
