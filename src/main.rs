@@ -26,6 +26,10 @@ use std::collections::HashMap;
 #[command(name = "ollama-api-access")]
 #[command(about = "A CLI tool to interact with Ollama API")]
 struct Cli {
+    /// Path to config file (default: ~/.config/ollama-api-access/config.toml)
+    #[arg(short, long, global = true)]
+    config: Option<PathBuf>,
+    
     #[command(subcommand)]
     command: Commands,
 }
@@ -156,28 +160,40 @@ impl ModelSpec {
 }
 
 /// Load configuration from file
-fn load_config() -> Result<Config, Box<dyn std::error::Error>> {
-    let config_dir = dirs::config_dir()
-        .ok_or("Could not determine config directory")?
-        .join("ollama-api-access");
-    
-    let config_file = config_dir.join("config.toml");
+fn load_config(config_path: Option<PathBuf>) -> Result<Config, Box<dyn std::error::Error>> {
+    let config_file = if let Some(ref path) = config_path {
+        // Use the provided config path
+        path.clone()
+    } else {
+        // Use default config directory
+        let config_dir = dirs::config_dir()
+            .ok_or("Could not determine config directory")?
+            .join("ollama-api-access");
+        config_dir.join("config.toml")
+    };
     
     if config_file.exists() {
         let content = std::fs::read_to_string(&config_file)?;
         let config: Config = toml::from_str(&content)?;
+        info!("Loaded config from: {}", config_file.display());
         Ok(config)
     } else {
-        // Create default config file
-        std::fs::create_dir_all(&config_dir)?;
-        let default_config = Config::default();
-        let content = toml::to_string_pretty(&default_config)?;
-        std::fs::write(&config_file, content)?;
-        
-        info!("Created default config at: {}", config_file.display());
-        info!("Please edit the config file to add your API keys and endpoints.");
-        
-        Ok(default_config)
+        // Create default config file only if using default path
+        if config_path.is_none() {
+            let config_dir = config_file.parent()
+                .ok_or("Could not determine config directory")?;
+            std::fs::create_dir_all(config_dir)?;
+            let default_config = Config::default();
+            let content = toml::to_string_pretty(&default_config)?;
+            std::fs::write(&config_file, content)?;
+            
+            info!("Created default config at: {}", config_file.display());
+            info!("Please edit the config file to add your API keys and endpoints.");
+            
+            Ok(default_config)
+        } else {
+            Err(format!("Config file not found: {}", config_file.display()).into())
+        }
     }
 }
 
@@ -577,7 +593,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     // Load configuration
-    let config = load_config()?;
+    let config = load_config(cli.config)?;
     let client = create_genai_client(&config)?;
 
     match cli.command {
