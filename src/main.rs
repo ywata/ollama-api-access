@@ -371,8 +371,7 @@ impl ChatApp {
             is_user,
             timestamp: Instant::now(),
         });
-        // Reset scroll to bottom when new message arrives
-        self.scroll_offset = 0;
+        // Keep current scroll position when new message arrives
     }
 
     fn scroll_up(&mut self) {
