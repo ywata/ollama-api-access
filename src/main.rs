@@ -346,7 +346,7 @@ struct ChatApp {
     model_spec: ModelSpec,
     client: genai::Client,
     config: Config,
-    scroll_offset: usize,
+    scroll_offset: u16,
 }
 
 impl ChatApp {
@@ -369,27 +369,16 @@ impl ChatApp {
             is_user,
             timestamp: Instant::now(),
         });
-        // Auto-scroll to bottom
-        if self.messages.len() > 10 {
-            self.scroll_offset = self.messages.len() - 10;
-        }
+        // Reset scroll to bottom when new message arrives
+        self.scroll_offset = 0;
     }
 
     fn scroll_up(&mut self) {
-        if self.scroll_offset > 0 {
-            self.scroll_offset -= 1;
-        }
+        self.scroll_offset = self.scroll_offset.saturating_add(1);
     }
 
     fn scroll_down(&mut self) {
-        let max_scroll = if self.messages.len() > 10 {
-            self.messages.len() - 10
-        } else {
-            0
-        };
-        if self.scroll_offset < max_scroll {
-            self.scroll_offset += 1;
-        }
+        self.scroll_offset = self.scroll_offset.saturating_sub(1);
     }
 }
 
@@ -574,34 +563,42 @@ fn ui(f: &mut Frame, app: &ChatApp) {
         .constraints([Constraint::Min(1), Constraint::Length(3)])
         .split(f.size());
 
-    // Messages area
-    let messages: Vec<ListItem> = app
-        .messages
-        .iter()
-        .skip(app.scroll_offset)
-        .take(chunks[0].height as usize - 2) // Account for borders
-        .map(|msg| {
-            let style = if msg.is_user {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+    // Messages area - Build formatted text with proper wrapping
+    let mut text_lines = Vec::new();
+    
+    for msg in app.messages.iter() {
+        let style = if msg.is_user {
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::Green)
+        };
+        
+        let prefix = if msg.is_user { "You: " } else { "AI: " };
+        
+        // Split message by newlines and create styled lines
+        for (i, line) in msg.content.lines().enumerate() {
+            let content = if i == 0 {
+                format!("{}{}", prefix, line)
             } else {
-                Style::default().fg(Color::Green)
+                format!("     {}", line) // Indent continuation lines
             };
-            
-            let prefix = if msg.is_user { "You: " } else { "AI: " };
-            let content = format!("{}{}", prefix, msg.content);
-            
-            ListItem::new(Text::from(Line::from(vec![
-                Span::styled(content, style)
-            ])))
-        })
-        .collect();
+            text_lines.push(Line::from(vec![Span::styled(content, style)]));
+        }
+        
+        // Add empty line between messages for readability
+        text_lines.push(Line::from(""));
+    }
 
     let messages_block = Block::default()
         .borders(Borders::ALL)
         .title("Chat Messages (↑/↓ to scroll, Ctrl+C to quit)");
     
-    let messages_list = List::new(messages).block(messages_block);
-    f.render_widget(messages_list, chunks[0]);
+    let messages_paragraph = Paragraph::new(text_lines)
+        .block(messages_block)
+        .wrap(Wrap { trim: false })
+        .scroll((app.scroll_offset, 0));
+    
+    f.render_widget(messages_paragraph, chunks[0]);
 
     // Input area
     let input_block = Block::default()
