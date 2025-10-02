@@ -12,8 +12,8 @@ use ratatui::{
     backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Wrap},
     Frame, Terminal,
 };
 use std::io;
@@ -347,6 +347,7 @@ struct ChatApp {
     client: genai::Client,
     config: Config,
     scroll_offset: u16,
+    max_scroll: u16,
 }
 
 impl ChatApp {
@@ -360,6 +361,7 @@ impl ChatApp {
             client,
             config,
             scroll_offset: 0,
+            max_scroll: 0,
         }
     }
 
@@ -374,7 +376,9 @@ impl ChatApp {
     }
 
     fn scroll_up(&mut self) {
-        self.scroll_offset = self.scroll_offset.saturating_add(1);
+        if self.scroll_offset < self.max_scroll {
+            self.scroll_offset = self.scroll_offset.saturating_add(1);
+        }
     }
 
     fn scroll_down(&mut self) {
@@ -557,7 +561,7 @@ async fn send_chat_message(
 }
 
 /// Draw the UI
-fn ui(f: &mut Frame, app: &ChatApp) {
+fn ui(f: &mut Frame, app: &mut ChatApp) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(1), Constraint::Length(3)])
@@ -588,6 +592,11 @@ fn ui(f: &mut Frame, app: &ChatApp) {
         // Add empty line between messages for readability
         text_lines.push(Line::from(""));
     }
+
+    // Calculate maximum scroll offset
+    let visible_height = chunks[0].height.saturating_sub(2) as u16; // Account for borders
+    let total_lines = text_lines.len() as u16;
+    app.max_scroll = total_lines.saturating_sub(visible_height);
 
     let messages_block = Block::default()
         .borders(Borders::ALL)
