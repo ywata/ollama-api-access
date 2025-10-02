@@ -72,7 +72,7 @@ enum Commands {
 
 /// Configuration for AI providers
 #[derive(Debug, Deserialize, Serialize, Clone)]
-struct Config {
+pub struct Config {
     #[serde(default)]
     providers: Providers,
     #[serde(default)]
@@ -114,15 +114,15 @@ impl Default for Config {
 }
 
 /// Parsed model specification
-#[derive(Debug, Clone)]
-struct ModelSpec {
-    provider: String,
-    model: String,
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelSpec {
+    pub provider: String,
+    pub model: String,
 }
 
 impl ModelSpec {
     /// Parse model string in format "provider:model" or just "model" (defaults to ollama)
-    fn parse(model_str: &str) -> Self {
+    pub fn parse(model_str: &str) -> Self {
         if let Some((provider, model)) = model_str.split_once(':') {
             Self {
                 provider: provider.to_string(),
@@ -137,7 +137,7 @@ impl ModelSpec {
     }
 
     /// Get the actual deployment name for Azure models
-    fn resolve_deployment(&self, config: &Config) -> String {
+    pub fn resolve_deployment(&self, config: &Config) -> String {
         let key = format!("{}:{}", self.provider, self.model);
         config.deployments.get(&key)
             .cloned()
@@ -283,7 +283,7 @@ async fn get_image_data(source: &ImageSource) -> Result<Vec<u8>, Box<dyn std::er
 }
 
 /// Get all image files from a directory
-fn get_image_files_from_directory(dir: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
+pub fn get_image_files_from_directory(dir: &PathBuf) -> Result<Vec<PathBuf>, Box<dyn std::error::Error>> {
     let mut image_files = Vec::new();
     
     if !dir.is_dir() {
@@ -449,4 +449,258 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Tests for ModelSpec::parse
+    #[test]
+    fn test_model_spec_parse_with_provider() {
+        let spec = ModelSpec::parse("azure:gpt-4");
+        assert_eq!(spec.provider, "azure");
+        assert_eq!(spec.model, "gpt-4");
+    }
+
+    #[test]
+    fn test_model_spec_parse_without_provider() {
+        let spec = ModelSpec::parse("llama3.2");
+        assert_eq!(spec.provider, "ollama");
+        assert_eq!(spec.model, "llama3.2");
+    }
+
+    #[test]
+    fn test_model_spec_parse_with_multiple_colons() {
+        let spec = ModelSpec::parse("openai:gpt-4:turbo");
+        assert_eq!(spec.provider, "openai");
+        assert_eq!(spec.model, "gpt-4:turbo");
+    }
+
+    #[test]
+    fn test_model_spec_parse_empty_string() {
+        let spec = ModelSpec::parse("");
+        assert_eq!(spec.provider, "ollama");
+        assert_eq!(spec.model, "");
+    }
+
+    #[test]
+    fn test_model_spec_parse_only_colon() {
+        let spec = ModelSpec::parse(":");
+        assert_eq!(spec.provider, "");
+        assert_eq!(spec.model, "");
+    }
+
+    #[test]
+    fn test_model_spec_parse_provider_with_dash() {
+        let spec = ModelSpec::parse("hugging-face:llama-2");
+        assert_eq!(spec.provider, "hugging-face");
+        assert_eq!(spec.model, "llama-2");
+    }
+
+    // Tests for ModelSpec::resolve_deployment
+    #[test]
+    fn test_resolve_deployment_with_mapping() {
+        let mut config = Config::default();
+        config.deployments.insert("azure:gpt-4".to_string(), "my-gpt4-deployment".to_string());
+        
+        let spec = ModelSpec {
+            provider: "azure".to_string(),
+            model: "gpt-4".to_string(),
+        };
+        
+        assert_eq!(spec.resolve_deployment(&config), "my-gpt4-deployment");
+    }
+
+    #[test]
+    fn test_resolve_deployment_without_mapping() {
+        let config = Config::default();
+        
+        let spec = ModelSpec {
+            provider: "ollama".to_string(),
+            model: "llama3.2".to_string(),
+        };
+        
+        assert_eq!(spec.resolve_deployment(&config), "llama3.2");
+    }
+
+    #[test]
+    fn test_resolve_deployment_fallback_to_model_name() {
+        let config = Config::default();
+        
+        let spec = ModelSpec {
+            provider: "azure".to_string(),
+            model: "gpt-4".to_string(),
+        };
+        
+        // Should return model name when no deployment mapping exists
+        assert_eq!(spec.resolve_deployment(&config), "gpt-4");
+    }
+
+    #[test]
+    fn test_resolve_deployment_with_multiple_mappings() {
+        let mut config = Config::default();
+        config.deployments.insert("azure:gpt-4".to_string(), "deployment-1".to_string());
+        config.deployments.insert("azure:gpt-3.5".to_string(), "deployment-2".to_string());
+        config.deployments.insert("openai:gpt-4".to_string(), "deployment-3".to_string());
+        
+        let spec1 = ModelSpec::parse("azure:gpt-4");
+        let spec2 = ModelSpec::parse("azure:gpt-3.5");
+        let spec3 = ModelSpec::parse("openai:gpt-4");
+        let spec4 = ModelSpec::parse("azure:gpt-4-turbo"); // Not mapped
+        
+        assert_eq!(spec1.resolve_deployment(&config), "deployment-1");
+        assert_eq!(spec2.resolve_deployment(&config), "deployment-2");
+        assert_eq!(spec3.resolve_deployment(&config), "deployment-3");
+        assert_eq!(spec4.resolve_deployment(&config), "gpt-4-turbo");
+    }
+
+    // Tests for get_image_files_from_directory
+    #[test]
+    fn test_get_image_files_from_directory_with_images() {
+        // Create a temporary directory with test files
+        let temp_dir = std::env::temp_dir().join("ollama_test_images");
+        let _ = std::fs::remove_dir_all(&temp_dir); // Clean up if exists
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        
+        // Create test files
+        let image_files = vec![
+            temp_dir.join("test1.jpg"),
+            temp_dir.join("test2.png"),
+            temp_dir.join("test3.gif"),
+            temp_dir.join("ignored.txt"),
+            temp_dir.join("test4.JPEG"), // Test case sensitivity
+        ];
+        
+        for file in &image_files {
+            std::fs::write(file, b"test").unwrap();
+        }
+        
+        let result = get_image_files_from_directory(&temp_dir).unwrap();
+        
+        // Should find 4 image files (excluding txt)
+        assert_eq!(result.len(), 4);
+        
+        // Should be sorted
+        assert!(result.windows(2).all(|w| w[0] <= w[1]));
+        
+        // Cleanup
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_image_files_from_directory_empty() {
+        let temp_dir = std::env::temp_dir().join("ollama_test_empty");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        
+        let result = get_image_files_from_directory(&temp_dir).unwrap();
+        assert_eq!(result.len(), 0);
+        
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_image_files_from_directory_not_a_directory() {
+        let temp_file = std::env::temp_dir().join("ollama_test_file.txt");
+        std::fs::write(&temp_file, b"test").unwrap();
+        
+        let result = get_image_files_from_directory(&temp_file);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not a directory"));
+        
+        std::fs::remove_file(&temp_file).unwrap();
+    }
+
+    #[test]
+    fn test_get_image_files_all_supported_extensions() {
+        let temp_dir = std::env::temp_dir().join("ollama_test_extensions");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        
+        let extensions = vec!["jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif"];
+        
+        for (i, ext) in extensions.iter().enumerate() {
+            let file = temp_dir.join(format!("test{}.{}", i, ext));
+            std::fs::write(&file, b"test").unwrap();
+        }
+        
+        let result = get_image_files_from_directory(&temp_dir).unwrap();
+        assert_eq!(result.len(), 8);
+        
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_image_files_mixed_case_extensions() {
+        let temp_dir = std::env::temp_dir().join("ollama_test_case");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        
+        // Create files with various case combinations
+        let files = vec![
+            temp_dir.join("test1.JPG"),
+            temp_dir.join("test2.Png"),
+            temp_dir.join("test3.GIF"),
+            temp_dir.join("test4.TiFF"),
+        ];
+        
+        for file in &files {
+            std::fs::write(file, b"test").unwrap();
+        }
+        
+        let result = get_image_files_from_directory(&temp_dir).unwrap();
+        assert_eq!(result.len(), 4, "Should recognize case-insensitive extensions");
+        
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_image_files_ignores_non_images() {
+        let temp_dir = std::env::temp_dir().join("ollama_test_non_images");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        
+        // Create a mix of image and non-image files
+        let files = vec![
+            ("test1.jpg", true),
+            ("test2.txt", false),
+            ("test3.pdf", false),
+            ("test4.png", true),
+            ("test5.doc", false),
+            ("test6.gif", true),
+        ];
+        
+        for (filename, _) in &files {
+            let path = temp_dir.join(filename);
+            std::fs::write(&path, b"test").unwrap();
+        }
+        
+        let result = get_image_files_from_directory(&temp_dir).unwrap();
+        assert_eq!(result.len(), 3, "Should only find image files");
+        
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
+
+    #[test]
+    fn test_get_image_files_nested_directories_ignored() {
+        let temp_dir = std::env::temp_dir().join("ollama_test_nested");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        
+        // Create file in root
+        std::fs::write(temp_dir.join("root.jpg"), b"test").unwrap();
+        
+        // Create nested directory with file
+        let nested = temp_dir.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("nested.jpg"), b"test").unwrap();
+        
+        let result = get_image_files_from_directory(&temp_dir).unwrap();
+        // Should only find file in root directory, not in nested
+        assert_eq!(result.len(), 1);
+        assert!(result[0].file_name().unwrap() == "root.jpg");
+        
+        std::fs::remove_dir_all(&temp_dir).unwrap();
+    }
 }

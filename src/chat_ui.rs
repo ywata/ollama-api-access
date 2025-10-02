@@ -20,14 +20,14 @@ use crate::{Config, ModelSpec, send_genai_query};
 
 /// Represents a chat message in the conversation
 #[derive(Debug, Clone)]
-struct ChatMessageDisplay {
-    content: String,
-    is_user: bool,
-    timestamp: Instant,
+pub struct ChatMessageDisplay {
+    pub content: String,
+    pub is_user: bool,
+    pub timestamp: Instant,
 }
 
 /// Application state for the chat interface
-struct ChatApp {
+pub struct ChatApp {
     messages: Vec<ChatMessageDisplay>,
     input: String,
     should_quit: bool,
@@ -40,7 +40,7 @@ struct ChatApp {
 }
 
 impl ChatApp {
-    fn new(model: String, model_spec: ModelSpec, client: genai::Client, config: Config) -> Self {
+    pub fn new(model: String, model_spec: ModelSpec, client: genai::Client, config: Config) -> Self {
         Self {
             messages: Vec::new(),
             input: String::new(),
@@ -54,7 +54,7 @@ impl ChatApp {
         }
     }
 
-    fn add_message(&mut self, content: String, is_user: bool) {
+    pub fn add_message(&mut self, content: String, is_user: bool) {
         self.messages.push(ChatMessageDisplay {
             content,
             is_user,
@@ -74,7 +74,7 @@ impl ChatApp {
     }
 
     /// Calculate total lines for messages up to (but not including) the given index
-    fn count_lines_before(&self, message_index: usize) -> usize {
+    pub fn count_lines_before(&self, message_index: usize) -> usize {
         let mut line_count = 0;
         for (i, msg) in self.messages.iter().enumerate() {
             if i >= message_index {
@@ -89,13 +89,24 @@ impl ChatApp {
     }
 
     /// Scroll to show the last user message (query)
-    fn scroll_to_last_user_message(&mut self) {
+    pub fn scroll_to_last_user_message(&mut self) {
         // Find the last user message (should be the most recent query)
         if let Some(pos) = self.messages.iter().rposition(|msg| msg.is_user) {
             let lines_before = self.count_lines_before(pos);
             // Set scroll to show this message (with some context above if possible)
             self.scroll_offset = lines_before.saturating_sub(2) as u16;
         }
+    }
+
+    // Accessor methods for testing
+    #[cfg(test)]
+    pub fn messages(&self) -> &[ChatMessageDisplay] {
+        &self.messages
+    }
+
+    #[cfg(test)]
+    pub fn scroll_offset(&self) -> u16 {
+        self.scroll_offset
     }
 }
 
@@ -340,4 +351,176 @@ pub async fn run_chat(model: String, client: genai::Client, config: Config) -> R
     terminal.show_cursor()?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Helper function to create a test ChatApp
+    fn create_test_app() -> ChatApp {
+        let config = Config::default();
+        let model_spec = ModelSpec::parse("test:model");
+        let client = genai::Client::default();
+        ChatApp::new("test".to_string(), model_spec, client, config)
+    }
+
+    // Tests for count_lines_before
+    #[test]
+    fn test_count_lines_before_empty() {
+        let app = create_test_app();
+        assert_eq!(app.count_lines_before(0), 0);
+    }
+
+    #[test]
+    fn test_count_lines_before_single_line_messages() {
+        let mut app = create_test_app();
+        app.add_message("Message 1".to_string(), true);
+        app.add_message("Message 2".to_string(), false);
+        app.add_message("Message 3".to_string(), true);
+
+        // Before index 0: no messages
+        assert_eq!(app.count_lines_before(0), 0);
+        
+        // Before index 1: Message 1 (1 line) + empty line (1) = 2
+        assert_eq!(app.count_lines_before(1), 2);
+        
+        // Before index 2: Message 1 + Message 2 + 2 empty lines = 4
+        assert_eq!(app.count_lines_before(2), 4);
+        
+        // Before index 3: all 3 messages + 3 empty lines = 6
+        assert_eq!(app.count_lines_before(3), 6);
+    }
+
+    #[test]
+    fn test_count_lines_before_multi_line_messages() {
+        let mut app = create_test_app();
+        app.add_message("Line 1\nLine 2\nLine 3".to_string(), true);
+        app.add_message("Single line".to_string(), false);
+
+        // Before index 0: nothing
+        assert_eq!(app.count_lines_before(0), 0);
+        
+        // Before index 1: 3 lines from message + 1 empty line = 4
+        assert_eq!(app.count_lines_before(1), 4);
+        
+        // Before index 2: 3 lines + 1 line + 2 empty lines = 6
+        assert_eq!(app.count_lines_before(2), 6);
+    }
+
+    #[test]
+    fn test_count_lines_before_empty_message() {
+        let mut app = create_test_app();
+        app.add_message("".to_string(), true);
+        app.add_message("Message".to_string(), false);
+
+        // Empty message should count as 1 line (max(1))
+        assert_eq!(app.count_lines_before(1), 2); // 1 (message) + 1 (empty line)
+        assert_eq!(app.count_lines_before(2), 4); // 2 + 1 (message) + 1 (empty line)
+    }
+
+    #[test]
+    fn test_count_lines_before_beyond_message_count() {
+        let mut app = create_test_app();
+        app.add_message("Message 1".to_string(), true);
+        app.add_message("Message 2".to_string(), false);
+
+        // Should stop at message count
+        assert_eq!(app.count_lines_before(10), 4); // Same as count_lines_before(2)
+    }
+
+    // Tests for scroll_to_last_user_message
+    #[test]
+    fn test_scroll_to_last_user_message_no_messages() {
+        let mut app = create_test_app();
+        let initial_offset = app.scroll_offset();
+        
+        app.scroll_to_last_user_message();
+        
+        // Should not change scroll offset
+        assert_eq!(app.scroll_offset(), initial_offset);
+    }
+
+    #[test]
+    fn test_scroll_to_last_user_message_no_user_messages() {
+        let mut app = create_test_app();
+        app.add_message("AI message".to_string(), false);
+        
+        let initial_offset = app.scroll_offset();
+        app.scroll_to_last_user_message();
+        
+        // Should not change scroll offset if no user messages
+        assert_eq!(app.scroll_offset(), initial_offset);
+    }
+
+    #[test]
+    fn test_scroll_to_last_user_message_single_user_message() {
+        let mut app = create_test_app();
+        app.add_message("User query".to_string(), true);
+        
+        app.scroll_to_last_user_message();
+        
+        // Should scroll to 0 (saturating_sub(2) on 0 = 0)
+        assert_eq!(app.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn test_scroll_to_last_user_message_multiple_exchanges() {
+        let mut app = create_test_app();
+        app.add_message("First user query".to_string(), true);
+        app.add_message("First AI response".to_string(), false);
+        app.add_message("Second user query".to_string(), true);
+        app.add_message("Second AI response\nwith more\nlines".to_string(), false);
+        
+        app.scroll_to_last_user_message();
+        
+        // Last user message is at index 2
+        // Before index 2: 1 + 1 + 2 empty lines = 4
+        // 4 - 2 = 2
+        assert_eq!(app.scroll_offset(), 2);
+    }
+
+    #[test]
+    fn test_scroll_to_last_user_message_finds_last_not_first() {
+        let mut app = create_test_app();
+        app.add_message("First user message".to_string(), true);
+        app.add_message("AI response".to_string(), false);
+        app.add_message("Second user message".to_string(), true);
+        
+        app.scroll_to_last_user_message();
+        
+        // Should scroll to the LAST (second) user message, not the first
+        // Last user is at index 2
+        // Before index 2: 1 + 1 + 2 empty = 4, 4 - 2 = 2
+        assert_eq!(app.scroll_offset(), 2);
+    }
+
+    #[test]
+    fn test_add_message_preserves_scroll() {
+        let mut app = create_test_app();
+        app.add_message("First".to_string(), true);
+        
+        // Manually set scroll offset
+        app.scroll_offset = 5;
+        
+        // Add new message
+        app.add_message("Second".to_string(), false);
+        
+        // Scroll should be preserved (as per current implementation)
+        assert_eq!(app.scroll_offset(), 5);
+    }
+
+    #[test]
+    fn test_messages_accessor() {
+        let mut app = create_test_app();
+        app.add_message("Message 1".to_string(), true);
+        app.add_message("Message 2".to_string(), false);
+        
+        let messages = app.messages();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "Message 1");
+        assert!(messages[0].is_user);
+        assert_eq!(messages[1].content, "Message 2");
+        assert!(!messages[1].is_user);
+    }
 }
