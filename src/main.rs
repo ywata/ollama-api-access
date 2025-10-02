@@ -467,6 +467,7 @@ fn handle_chat_event(
             handle_input_event(app, input_event, tx)?;
         }
         ChatEvent::OllamaResponse(response) => {
+            info!("📩 Received response from AI");
             app.add_message(response, false);
         }
         ChatEvent::OllamaError(error) => {
