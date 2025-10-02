@@ -383,6 +383,31 @@ impl ChatApp {
     fn scroll_down(&mut self) {
         self.scroll_offset = self.scroll_offset.saturating_sub(1);
     }
+
+    /// Calculate total lines for messages up to (but not including) the given index
+    fn count_lines_before(&self, message_index: usize) -> usize {
+        let mut line_count = 0;
+        for (i, msg) in self.messages.iter().enumerate() {
+            if i >= message_index {
+                break;
+            }
+            // Count lines in the message content
+            line_count += msg.content.lines().count().max(1);
+            // Add 1 for empty line between messages
+            line_count += 1;
+        }
+        line_count
+    }
+
+    /// Scroll to show the last user message (query)
+    fn scroll_to_last_user_message(&mut self) {
+        // Find the last user message (should be the most recent query)
+        if let Some(pos) = self.messages.iter().rposition(|msg| msg.is_user) {
+            let lines_before = self.count_lines_before(pos);
+            // Set scroll to show this message (with some context above if possible)
+            self.scroll_offset = lines_before.saturating_sub(2) as u16;
+        }
+    }
 }
 
 /// Events that can occur in the chat application
@@ -461,6 +486,8 @@ fn handle_chat_event(
         ChatEvent::OllamaResponse(response) => {
             info!("📩 Received response from AI");
             app.add_message(response, false);
+            // Scroll to show the query that this response is for
+            app.scroll_to_last_user_message();
         }
         ChatEvent::OllamaError(error) => {
             app.add_message(error, false);
