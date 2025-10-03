@@ -32,6 +32,10 @@ enum Commands {
         #[arg(long, group = "prompt_input")]
         prompt_file: Option<PathBuf>,
         
+        /// Read system prompt from file
+        #[arg(long)]
+        system_file: Option<PathBuf>,
+        
         /// The model to use (default: llama3.2)
         #[arg(short, long, default_value = "llama3.2")]
         model: String,
@@ -45,6 +49,10 @@ enum Commands {
         /// Read prompt from file
         #[arg(long, group = "prompt_input")]
         prompt_file: Option<PathBuf>,
+        
+        /// Read system prompt from file
+        #[arg(long)]
+        system_file: Option<PathBuf>,
         
         /// Path to the image file
         #[arg(short, long, group = "image_input")]
@@ -64,6 +72,10 @@ enum Commands {
     },
     /// Start an interactive chat session with Ollama
     Chat {
+        /// Read system prompt from file
+        #[arg(long)]
+        system_file: Option<PathBuf>,
+        
         /// The model to use for chat (default: llama3.2)
         #[arg(short, long, default_value = "llama3.2")]
         model: String,
@@ -209,6 +221,7 @@ async fn send_genai_query(
     model_spec: &ModelSpec,
     config: &Config,
     prompt: &str,
+    system_prompt: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use genai::chat::{ChatMessage, ChatRequest};
     
@@ -216,7 +229,13 @@ async fn send_genai_query(
     
     info!("🤖 Sending query to {}...", model);
     
-    let chat_req = ChatRequest::new(vec![ChatMessage::user(prompt)]);
+    let mut messages = Vec::new();
+    if let Some(system) = system_prompt {
+        messages.push(ChatMessage::system(system));
+    }
+    messages.push(ChatMessage::user(prompt));
+    
+    let chat_req = ChatRequest::new(messages);
     
     let chat_res = client.exec_chat(&model, chat_req, None).await?;
     
@@ -230,6 +249,7 @@ async fn send_genai_vision_query(
     config: &Config,
     prompt: &str,
     image_data: &[u8],
+    system_prompt: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     use genai::chat::{ChatMessage, ChatRequest, ContentPart};
     
@@ -240,10 +260,16 @@ async fn send_genai_vision_query(
     // Encode image to base64
     let image_base64 = base64::prelude::BASE64_STANDARD.encode(image_data);
     
-    let chat_req = ChatRequest::new(vec![ChatMessage::user(vec![
+    let mut messages = Vec::new();
+    if let Some(system) = system_prompt {
+        messages.push(ChatMessage::system(system));
+    }
+    messages.push(ChatMessage::user(vec![
         ContentPart::from_text(prompt),
         ContentPart::from_image_base64("image/jpeg", image_base64),
-    ])]);
+    ]));
+    
+    let chat_req = ChatRequest::new(messages);
     
     let chat_res = client.exec_chat(&model, chat_req, None).await?;
     
@@ -328,7 +354,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let client = create_genai_client(&config)?;
 
     match cli.command {
-        Commands::Query { prompt, prompt_file, model } => {
+        Commands::Query { prompt, prompt_file, system_file, model } => {
             // Get prompt from either --prompt or --prompt-file
             let prompt_text = match (prompt, prompt_file) {
                 (Some(p), None) => p,
@@ -337,19 +363,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 (None, None) => return Err("Must specify either --prompt or --prompt-file".into()),
             };
             
+            // Get system prompt from file if specified
+            let system_prompt = if let Some(file) = system_file {
+                Some(fs::read_to_string(file)?)
+            } else {
+                None
+            };
+            
             let model_spec = ModelSpec::parse(&model);
-            let response = send_genai_query(&client, &model_spec, &config, &prompt_text).await?;
+            let response = send_genai_query(&client, &model_spec, &config, &prompt_text, system_prompt.as_deref()).await?;
             
             info!("📝 Response:");
             println!("{}", response);
         }
-        Commands::AnalyzeImage { prompt, prompt_file, image, image_dir, image_url, model } => {
+        Commands::AnalyzeImage { prompt, prompt_file, system_file, image, image_dir, image_url, model } => {
             // Get prompt from either --prompt or --prompt-file
             let prompt_text = match (prompt, prompt_file) {
                 (Some(p), None) => p,
                 (None, Some(file)) => fs::read_to_string(file)?,
                 (Some(_), Some(_)) => return Err("Cannot specify both --prompt and --prompt-file".into()),
                 (None, None) => return Err("Must specify either --prompt or --prompt-file".into()),
+            };
+            
+            // Get system prompt from file if specified
+            let system_prompt = if let Some(file) = system_file {
+                Some(fs::read_to_string(file)?)
+            } else {
+                None
             };
             
             // Create ImageSource instances based on command arguments
@@ -395,7 +435,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Handle each image individually to avoid stopping on errors
                 match get_image_data(image_source).await {
                     Ok(image_data) => {
-                        match send_genai_vision_query(&client, &model_spec, &config, &prompt_text, &image_data).await {
+                        match send_genai_vision_query(&client, &model_spec, &config, &prompt_text, &image_data, system_prompt.as_deref()).await {
                             Ok(response) => {
                                 successful_count += 1;
                                 info!("📝 Analysis:");
@@ -441,10 +481,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             info!("📈 Total images: {}", image_sources.len());
         }
-        Commands::Chat { model } => {
+        Commands::Chat { system_file, model } => {
+            // Get system prompt from file if specified
+            let system_prompt = if let Some(file) = system_file {
+                Some(fs::read_to_string(file)?)
+            } else {
+                None
+            };
+            
             let model_spec = ModelSpec::parse(&model);
             info!("🚀 Starting chat with {}...", model_spec.resolve_deployment(&config));
-            chat_ui::run_chat(model, client, config).await?;
+            chat_ui::run_chat(model, client, config, system_prompt).await?;
         }
     }
 

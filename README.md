@@ -8,6 +8,7 @@ A CLI tool to interact with multiple AI providers (Ollama, OpenAI, Azure OpenAI)
 - **Text Queries**: Send prompts to any AI model
 - **Image Analysis**: Analyze images with vision models
 - **Real-time Chat**: Interactive terminal-based chat interface
+- **System Prompts**: Customize AI behavior with system instructions
 - **Unified Interface**: Same commands work across all providers
 
 ## Configuration
@@ -68,6 +69,9 @@ cargo run -- query --prompt "Write a poem" --model azure:gpt-4
 
 # Query from file
 cargo run -- query --prompt-file prompt.txt --model openai:gpt-4o
+
+# With system prompt
+cargo run -- query --prompt "Hello" --system-file system_prompt.txt --model llama3.2
 ```
 
 ### Image Analysis
@@ -86,6 +90,9 @@ cargo run -- analyze-image --prompt "Describe each image" --image-dir ./photos/ 
 
 # Analyze image from URL
 cargo run -- analyze-image --prompt "What do you see?" --image-url https://example.com/image.jpg --model azure:gpt-4o
+
+# With system prompt
+cargo run -- analyze-image --prompt "What's here?" --image photo.jpg --system-file system_prompt.txt --model llama3.2-vision
 ```
 
 ### Real-time Chat
@@ -101,12 +108,34 @@ cargo run -- chat --model azure:gpt-4
 
 # Ollama vision model
 cargo run -- chat --model ollama:llama3.2-vision
+
+# With system prompt (applies to entire chat session)
+cargo run -- chat --system-file system_prompt.txt --model llama3.2
 ```
 
 #### Chat Controls
 - **Enter**: Send message
 - **↑/↓**: Scroll through message history
 - **Ctrl+C**: Exit chat
+
+## System Prompts
+
+System prompts allow you to customize the AI's behavior and personality. Use the `--system-file` option to load instructions from a file:
+
+```bash
+# Create a system prompt file
+cat > system_prompt.txt << EOF
+You are a helpful technical assistant who provides concise, accurate answers.
+Always include code examples when relevant.
+EOF
+
+# Use with any command
+cargo run -- query --prompt "Explain recursion" --system-file system_prompt.txt
+cargo run -- analyze-image --prompt "Describe" --image photo.jpg --system-file system_prompt.txt
+cargo run -- chat --system-file system_prompt.txt
+```
+
+See `system_prompt.example.md` for a template.
 
 ## Dependencies
 

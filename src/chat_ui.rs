@@ -35,12 +35,13 @@ pub struct ChatApp {
     model_spec: ModelSpec,
     client: genai::Client,
     config: Config,
+    system_prompt: Option<String>,
     scroll_offset: u16,
     max_scroll: u16,
 }
 
 impl ChatApp {
-    pub fn new(model: String, model_spec: ModelSpec, client: genai::Client, config: Config) -> Self {
+    pub fn new(model: String, model_spec: ModelSpec, client: genai::Client, config: Config, system_prompt: Option<String>) -> Self {
         Self {
             messages: Vec::new(),
             input: String::new(),
@@ -49,6 +50,7 @@ impl ChatApp {
             model_spec,
             client,
             config,
+            system_prompt,
             scroll_offset: 0,
             max_scroll: 0,
         }
@@ -124,8 +126,9 @@ async fn send_chat_message(
     model_spec: &ModelSpec,
     config: &Config,
     message: &str,
+    system_prompt: Option<&str>,
 ) -> Result<String, Box<dyn std::error::Error>> {
-    send_genai_query(client, model_spec, config, message).await
+    send_genai_query(client, model_spec, config, message, system_prompt).await
 }
 
 /// Handle input events (keyboard)
@@ -150,10 +153,11 @@ fn handle_input_event(
                         let client = app.client.clone();
                         let model_spec = app.model_spec.clone();
                         let config = app.config.clone();
+                        let system_prompt = app.system_prompt.clone();
                         let tx_clone = tx.clone();
                         
                         tokio::spawn(async move {
-                            match send_chat_message(&client, &model_spec, &config, &user_message).await {
+                            match send_chat_message(&client, &model_spec, &config, &user_message, system_prompt.as_deref()).await {
                                 Ok(response) => {
                                     let _ = tx_clone.send(ChatEvent::OllamaResponse(response));
                                 }
@@ -304,7 +308,7 @@ async fn chat_loop<B: ratatui::backend::Backend>(
 }
 
 /// Run the chat interface
-pub async fn run_chat(model: String, client: genai::Client, config: Config) -> Result<(), Box<dyn std::error::Error>> {
+pub async fn run_chat(model: String, client: genai::Client, config: Config, system_prompt: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -315,13 +319,15 @@ pub async fn run_chat(model: String, client: genai::Client, config: Config) -> R
     // Create app state
     let model_spec = ModelSpec::parse(&model);
     let display_model = model_spec.resolve_deployment(&config);
-    let mut app = ChatApp::new(model, model_spec, client, config);
+    let mut app = ChatApp::new(model, model_spec, client, config, system_prompt.clone());
     
     // Add welcome message
-    app.add_message(
-        format!("Welcome to Multi-Provider AI Chat! Using model: {}\nType your message and press Enter to send. Press Ctrl+C to quit.", display_model),
-        false,
-    );
+    let welcome_msg = if system_prompt.is_some() {
+        format!("Welcome to Multi-Provider AI Chat! Using model: {}\nSystem prompt: Active\nType your message and press Enter to send. Press Ctrl+C to quit.", display_model)
+    } else {
+        format!("Welcome to Multi-Provider AI Chat! Using model: {}\nType your message and press Enter to send. Press Ctrl+C to quit.", display_model)
+    };
+    app.add_message(welcome_msg, false);
 
     // Create channels for async communication
     let (tx, rx) = mpsc::unbounded_channel::<ChatEvent>();
@@ -362,7 +368,7 @@ mod tests {
         let config = Config::default();
         let model_spec = ModelSpec::parse("test:model");
         let client = genai::Client::default();
-        ChatApp::new("test".to_string(), model_spec, client, config)
+        ChatApp::new("test".to_string(), model_spec, client, config, None)
     }
 
     // Tests for count_lines_before
